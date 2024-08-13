@@ -1,0 +1,43 @@
+body {
+  margin: 0;
+  padding: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  background-color: #f0f0f0;
+  font-family: Arial, sans-serif;
+}
+
+.screen {
+  text-align: center;
+}
+
+.hidden {
+  display: none;
+}
+
+#gameCanvas {
+  border: 2px solid #333;
+}
+
+#score, #lives {
+  position: absolute;
+  font-size: 24px;
+}
+
+#score {
+  top: 10px;
+  left: 10px;
+}
+
+#lives {
+  top: 10px;
+  right: 10px;
+}
+
+button {
+  font-size: 20px;
+  padding: 10px 20px;
+  cursor: pointer;
+}
