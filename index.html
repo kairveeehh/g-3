@@ -3,23 +3,594 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Fruit Chop Game</title>
-    <link rel="stylesheet" href="style.css">
+    <title>Realistic Fruit Ninja 3D</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: Arial, sans-serif; }
+        canvas { display: block; }
+        #score {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-size: 24px;
+        }
+        #gameOver {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.7);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            font-size: 36px;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.5s ease;
+        }
+        #gameOver.show { opacity: 1; pointer-events: all; }
+        #gameOver h1 { margin-bottom: 20px; }
+        .btn {
+            padding: 10px 20px;
+            font-size: 24px;
+            margin: 10px;
+            cursor: pointer;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            transition: transform 0.1s ease, background-color 0.3s ease;
+        }
+        .btn:hover { transform: scale(1.1); background-color: #45a049; }
+    </style>
 </head>
 <body>
-    <div id="startScreen" class="screen">
-        <h1>Fruit Chop</h1>
-        <button id="startButton">Start Game</button>
+    <div id="score">Score: 0</div>
+    <canvas id="gameCanvas"></canvas>
+    <div id="gameOver">
+        <h1>Game Over</h1>
+        <p>Your Score: <span id="finalScore"></span></p>
+        <button id="retryBtn" class="btn">Retry</button>
+        <button id="exitBtn" class="btn">Exit</button>
     </div>
-    <div id="gameScreen" class="screen hidden">
-        <canvas id="gameCanvas"></canvas>
-        <div id="score">Score: <span id="scoreValue">0</span></div>
-    </div>
-    <div id="gameOverScreen" class="screen hidden">
-        <h2>Game Over</h2>
-        <p>Final Score: <span id="finalScore"></span></p>
-        <button id="restartButton">Play Again</button>
-    </div>
-    <script src="script.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.6.0/gsap.min.js"></script>
+    <script>
+        let scene, camera, renderer, fruits = [], score = 0;
+        let sliceSound, bombSound, backgroundMusic, sword;
+        const fruitTypes = ['apple', 'orange', 'watermelon', 'bomb'];
+        const fruitColors = {
+            apple: 0xff0000,
+            orange: 0xffa500,
+            watermelon: 0x00ff00,
+            bomb: 0x000000
+        };
+
+        function init() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer({canvas: document.getElementById('gameCanvas'), antialias: true});
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            renderer.toneMappingExposure = 1.0;
+            renderer.outputEncoding = THREE.sRGBEncoding;
+
+            // Set up lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(5, 10, 7);
+            directionalLight.castShadow = true;
+            directionalLight.shadow.mapSize.width = 2048;
+            directionalLight.shadow.mapSize.height = 2048;
+            directionalLight.shadow.camera.near = 1;
+            directionalLight.shadow.camera.far = 50;
+            scene.add(directionalLight);
+
+            camera.position.z = 5;
+
+            // Add background
+            const loader = new THREE.TextureLoader();
+            const bgTexture = loader.load('https://images.unsplash.com/photo-1506318137071-a8e063b4bec0?ixlib=rb-1.2.1&auto=format&fit=crop&w=1950&q=80');
+            scene.background = bgTexture;
+            const groundGeometry = new THREE.PlaneGeometry(20, 20);
+            const groundMaterial = new THREE.ShadowMaterial({ opacity: 0.3 });
+            const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+            ground.rotation.x = -Math.PI / 2;
+            ground.position.y = -3;
+            ground.receiveShadow = true;
+            scene.add(ground);
+            // Create sword
+            createSword();
+
+            // Set up raycaster for fruit slicing
+            const raycaster = new THREE.Raycaster();
+            const mouse = new THREE.Vector2();
+            window.addEventListener('mousemove', (event) => {
+    mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+    mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+    raycaster.setFromCamera(mouse, camera);
+    moveSword(mouse);
+
+    const intersects = raycaster.intersectObjects(scene.children, true);
+    for (let intersect of intersects) {
+        if (intersect.object.parent && intersect.object.parent.fruitType === 'bomb') {
+            createExplosion(intersect.object.parent.position);
+            bombSound.play();
+            scene.remove(intersect.object.parent);
+            fruits = fruits.filter(f => f !== intersect.object.parent);
+            gameOver();
+            return;
+        } else if (intersect.object.isFruit && !intersect.object.sliced) {
+            sliceFruit(intersect.object);
+        }
+    }
+});
+
+
+            // Load sounds
+            const listener = new THREE.AudioListener();
+            camera.add(listener);
+            sliceSound = new THREE.Audio(listener);
+            bombSound = new THREE.Audio(listener);
+            backgroundMusic = new THREE.Audio(listener);
+            const audioLoader = new THREE.AudioLoader();
+            audioLoader.load('https://freesound.org/data/previews/534/534611_5674468-lq.mp3', (buffer) => {
+                sliceSound.setBuffer(buffer);
+            });
+            audioLoader.load('https://freesound.org/data/previews/587/587183_7724198-lq.mp3', (buffer) => {
+                bombSound.setBuffer(buffer);
+            });
+            audioLoader.load('https://freesound.org/data/previews/411/411089_5121236-lq.mp3', (buffer) => {
+                backgroundMusic.setBuffer(buffer);
+                backgroundMusic.setLoop(true);
+                backgroundMusic.setVolume(0.5);
+                backgroundMusic.play();
+            });
+
+            animate();
+            setInterval(createFruit, 1000);
+
+            // Set up retry and exit buttons
+            document.getElementById('retryBtn').addEventListener('click', restartGame);
+            document.getElementById('exitBtn').addEventListener('click', exitGame);
+        }
+
+        function createSword() {
+            const swordGeometry = new THREE.BoxGeometry(0.05, 1.2, 0.01);
+            const swordMaterial = new THREE.MeshStandardMaterial({
+                color: 0xcccccc,
+                metalness: 0.8,
+                roughness: 0.2
+            });
+            sword = new THREE.Mesh(swordGeometry, swordMaterial);
+            sword.position.set(0, 0, 0);
+            sword.castShadow = true;
+            scene.add(sword);
+        }
+        function moveSword(mouse) {
+            gsap.to(sword.position, {
+                x: mouse.x * 5,
+                y: mouse.y * 3,
+                duration: 0.1,
+                ease: "power2.out"
+            });
+            sword.rotation.z = Math.atan2(mouse.y, mouse.x);
+        }
+    
+        function createFruit() {
+    const fruitType = fruitTypes[Math.floor(Math.random() * fruitTypes.length)];
+    let fruit;
+
+    if (fruitType === 'watermelon') {
+        fruit = createWatermelon();
+    } else if (fruitType === 'bomb') {
+        fruit = createBomb();
+    } else {
+        fruit = createSphericalFruit(fruitType);
+    }
+
+    fruit.position.set(
+        Math.random() * 4 - 2,
+        -3,
+        Math.random() * 2 - 1
+    );
+    fruit.isFruit = true;
+    fruit.fruitType = fruitType; // Set the fruitType property here
+    fruit.sliced = false;
+    fruit.castShadow = true;
+    fruit.receiveShadow = true;
+    scene.add(fruit);
+    fruits.push(fruit);
+
+    gsap.to(fruit.position, {
+        y: 3,
+        duration: 2,
+        ease: "power1.out",
+        onComplete: () => {
+            scene.remove(fruit);
+            fruits = fruits.filter(f => f !== fruit);
+        }
+    });
+}
+
+        function createSphericalFruit(fruitType) {
+            const geometry = new THREE.SphereGeometry(0.2, 64, 64);
+            const material = new THREE.MeshStandardMaterial({
+                color: fruitColors[fruitType],
+                metalness: 0.1,
+                roughness: 0.8
+            });
+            const fruit = new THREE.Mesh(geometry, material);
+            fruit.castShadow = true;
+            return fruit;
+        }
+
+        function createWatermelon() {
+            const group = new THREE.Group();
+            
+            const bodyGeometry = new THREE.SphereGeometry(0.2, 64, 32, 0, Math.PI);
+            const bodyMaterial = new THREE.MeshStandardMaterial({
+                color: 0x00ff00,
+                metalness: 0.1,
+                roughness: 0.8
+            });
+            const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+            group.add(body);
+
+            const insideGeometry = new THREE.SphereGeometry(0.19, 64, 32, 0, Math.PI);
+            const insideMaterial = new THREE.MeshStandardMaterial({
+                color: 0xff0000,
+                metalness: 0.1,
+                roughness: 0.6
+            });
+            const inside = new THREE.Mesh(insideGeometry, insideMaterial);
+            inside.rotation.x = Math.PI;
+            inside.position.y = 0.01;
+            group.add(inside);
+
+            group.castShadow = true;
+            return group;
+        }
+        function createExplosion(position) {
+    const particleCount = 200;
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(particleCount * 3);
+    const colors = new Float32Array(particleCount * 3);
+
+    for (let i = 0; i < particleCount; i++) {
+        const i3 = i * 3;
+        positions[i3] = position.x + (Math.random() - 0.5) * 2;
+        positions[i3 + 1] = position.y + (Math.random() - 0.5) * 2;
+        positions[i3 + 2] = position.z + (Math.random() - 0.5) * 2;
+
+        colors[i3] = Math.random();
+        colors[i3 + 1] = Math.random() * 0.5;
+        colors[i3 + 2] = 0;
+    }
+
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+    const material = new THREE.PointsMaterial({
+        size: 0.05,
+        vertexColors: true,
+        blending: THREE.AdditiveBlending,
+        transparent: true,
+        opacity: 1
+    });
+
+    const particles = new THREE.Points(geometry, material);
+    scene.add(particles);
+
+    gsap.to(particles.position, {
+        y: '+=1',
+        duration: 1.5,
+        ease: "power2.out"
+    });
+
+    gsap.to(material, {
+        opacity: 0,
+        duration: 1.5,
+        onComplete: () => {
+            scene.remove(particles);
+        }
+    });
+}
+        function createBomb() {
+    const group = new THREE.Group();
+    
+    const bodyGeometry = new THREE.SphereGeometry(0.2, 64, 64);
+    const bodyMaterial = new THREE.MeshStandardMaterial({
+        color: 0x000000,
+        metalness: 0.8,
+        roughness: 0.2
+    });
+    const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+    group.add(body);
+
+    const fuseGeometry = new THREE.CylinderGeometry(0.01, 0.01, 0.1, 16);
+    const fuseMaterial = new THREE.MeshStandardMaterial({
+        color: 0x8B4513,
+        metalness: 0.1,
+        roughness: 0.8
+    });
+    const fuse = new THREE.Mesh(fuseGeometry, fuseMaterial);
+    fuse.position.y = 0.2;
+    group.add(fuse);
+
+    group.castShadow = true;
+    group.fruitType = 'bomb'; // Set the fruitType property for the bomb
+    return group;
+}
+        function sliceFruit(fruit) {
+            sliceSound.play();
+            fruit.sliced = true;
+            score += 10;
+            document.getElementById('score').innerText = 'Score: ' + score;
+
+            createFruitSplash(fruit);
+            createFruitHalves(fruit);
+            createJuiceParticles(fruit);
+
+            scene.remove(fruit);
+            fruits = fruits.filter(f => f !== fruit);
+        }
+
+        function createFruitSplash(fruit) {
+            const splashGeometry = new THREE.BufferGeometry();
+            const particleCount = 100;
+            const posArray = new Float32Array(particleCount * 3);
+            const colorArray = new Float32Array(particleCount * 3);
+            const sizeArray = new Float32Array(particleCount);
+            const fruitColor = new THREE.Color(fruit.material.color);
+
+            for (let i = 0; i < particleCount * 3; i += 3) {
+                posArray[i] = fruit.position.x + (Math.random() - 0.5) * 0.5;
+                posArray[i + 1] = fruit.position.y + (Math.random() - 0.5) * 0.5;
+                posArray[i + 2] = fruit.position.z + (Math.random() - 0.5) * 0.5;
+
+                colorArray[i] = fruitColor.r;
+                colorArray[i + 1] = fruitColor.g;
+                colorArray[i + 2] = fruitColor.b;
+
+                sizeArray[i / 3] = Math.random() * 0.03 + 0.01;
+            }
+
+            splashGeometry.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
+            splashGeometry.setAttribute('color', new THREE.BufferAttribute(colorArray, 3));
+            splashGeometry.setAttribute('size', new THREE.BufferAttribute(sizeArray, 1));
+
+            const splashMaterial = new THREE.PointsMaterial({
+                size: 0.05,
+                vertexColors: true,
+                transparent: true,
+                blending: THREE.AdditiveBlending
+            });
+
+            const splash = new THREE.Points(splashGeometry, splashMaterial);
+            scene.add(splash);
+
+            gsap.to(splash.material, {
+                opacity: 0,
+                duration: 1,
+                onComplete: () => {
+                    scene.remove(splash);
+                }
+            });
+
+            gsap.to(splash.position, {
+                y: '-=1',
+                duration: 1,
+                ease: "power2.out"
+            });
+        }
+        function createFruitHalves(fruit) {
+            const halfGeometry = new THREE.SphereGeometry(0.2, 64, 32, 0, Math.PI);
+            const halfMaterial = new THREE.MeshStandardMaterial({
+                color: fruit.material.color,
+                side: THREE.DoubleSide,
+                metalness: 0.1,
+                roughness: 0.8
+            });
+
+            const leftHalf = new THREE.Mesh(halfGeometry, halfMaterial);
+            leftHalf.position.copy(fruit.position);
+            leftHalf.rotation.x = Math.PI / 2;
+            leftHalf.castShadow = true;
+            scene.add(leftHalf);
+
+            const rightHalf = leftHalf.clone();
+            rightHalf.rotation.y = Math.PI;
+            rightHalf.castShadow = true;
+            scene.add(rightHalf);
+
+            gsap.to(leftHalf.position, {
+                x: '-=0.5',
+                y: '-=0.5',
+                duration: 1,
+                ease: "power2.out",
+                onComplete: () => scene.remove(leftHalf)
+            });
+
+            gsap.to(rightHalf.position, {
+                x: '+=0.5',
+                y: '-=0.5',
+                duration: 1,
+                ease: "power2.out",
+                onComplete: () => scene.remove(rightHalf)
+            });
+        }
+
+        function createJuiceParticles(fruit) {
+            const particleCount = 50;
+            const geometry = new THREE.BufferGeometry();
+            const positions = new Float32Array(particleCount * 3);
+            const colors = new Float32Array(particleCount * 3);
+            const sizes = new Float32Array(particleCount);
+
+            const fruitColor = new THREE.Color(fruit.material.color);
+
+            for (let i = 0; i < particleCount; i++) {
+                const i3 = i * 3;
+                positions[i3] = fruit.position.x + (Math.random() - 0.5) * 0.3;
+                positions[i3 + 1] = fruit.position.y + (Math.random() - 0.5) * 0.3;
+                positions[i3 + 2] = fruit.position.z + (Math.random() - 0.5) * 0.3;
+
+                colors[i3] = fruitColor.r;
+                colors[i3 + 1] = fruitColor.g;
+                colors[i3 + 2] = fruitColor.b;
+
+                sizes[i] = Math.random() * 0.03 + 0.01;
+            }
+
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+            geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+
+            const material = new THREE.PointsMaterial({
+                size: 0.05,
+                vertexColors: true,
+                transparent: true,
+                opacity: 0.8,
+                blending: THREE.AdditiveBlending
+            });
+
+            const particles = new THREE.Points(geometry, material);
+            scene.add(particles);
+
+            gsap.to(particles.position, {
+                y: '-=1',
+                duration: 1,
+                ease: "power2.out",
+                onComplete: () => scene.remove(particles)
+            });
+
+            gsap.to(material, {
+                opacity: 0,
+                duration: 1,
+                ease: "power2.out"
+            });
+        }
+     
+function createExplosion(position) {
+    const particleCount = 200;
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(particleCount * 3);
+    const colors = new Float32Array(particleCount * 3);
+
+    for (let i = 0; i < particleCount; i++) {
+        const i3 = i * 3;
+        positions[i3] = position.x + (Math.random() - 0.5) * 2;
+        positions[i3 + 1] = position.y + (Math.random() - 0.5) * 2;
+        positions[i3 + 2] = position.z + (Math.random() - 0.5) * 2;
+
+        colors[i3] = Math.random();
+        colors[i3 + 1] = Math.random() * 0.5;
+        colors[i3 + 2] = 0;
+    }
+
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+    const material = new THREE.PointsMaterial({
+        size: 0.05,
+        vertexColors: true,
+        blending: THREE.AdditiveBlending,
+        transparent: true,
+        opacity: 1
+    });
+
+    const particles = new THREE.Points(geometry, material);
+    scene.add(particles);
+
+    gsap.to(particles.position, {
+        y: '+=1',
+        duration: 1.5,
+        ease: "power2.out"
+    });
+
+    gsap.to(material, {
+        opacity: 0,
+        duration: 1.5,
+        onComplete: () => {
+            scene.remove(particles);
+        }
+    });
+}
+
+// Update the mousemove event listener
+window.addEventListener('mousemove', (event) => {
+    mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+    mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+    raycaster.setFromCamera(mouse, camera);
+    moveSword(mouse);
+
+    const intersects = raycaster.intersectObjects(scene.children, true);
+    for (let intersect of intersects) {
+        if (intersect.object.parent && intersect.object.parent.fruitType === 'bomb') {
+            createExplosion(intersect.object.parent.position);
+            bombSound.play();
+            scene.remove(intersect.object.parent);
+            fruits = fruits.filter(f => f !== intersect.object.parent);
+            gameOver();
+            return;
+        } else if (intersect.object.isFruit && !intersect.object.sliced) {
+            sliceFruit(intersect.object);
+        }
+    }
+});
+
+// Update the gameOver function to stop the game loop
+function gameOver() {
+    bombSound.play();
+    backgroundMusic.stop();
+    document.getElementById('finalScore').textContent = score;
+    document.getElementById('gameOver').classList.add('show');
+    gsap.from('#gameOver h1', {opacity: 0, y: -50, duration: 0.5});
+    gsap.from('#gameOver p', {opacity: 0, y: -30, duration: 0.5, delay: 0.2});
+    gsap.from('#gameOver .btn', {opacity: 0, y: 30, duration: 0.5, delay: 0.4, stagger: 0.2});
+    
+    // Stop the game loop
+    cancelAnimationFrame(animationId);
+}
+
+        function restartGame() {
+            score = 0;
+            document.getElementById('score').innerText = 'Score: 0';
+            document.getElementById('gameOver').classList.remove('show');
+            fruits.forEach(fruit => scene.remove(fruit));
+            fruits = [];
+            backgroundMusic.play();
+        }
+
+        function exitGame() {
+            window.close();
+        }
+        let animationId;
+function animate() {
+    animationId = requestAnimationFrame(animate);
+    fruits.forEach(fruit => {
+        fruit.rotation.x += 0.01;
+        fruit.rotation.y += 0.01;
+    });
+    renderer.render(scene, camera);
+}
+
+        init();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
 </body>
 </html>
